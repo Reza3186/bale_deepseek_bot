@@ -37,7 +37,7 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
     global CONVERSATION_HISTORY
     
     # 🔴 تعریف پیام سیستمی و مدل
-    MODEL_NAME = "openai/gpt-3.5-turbo" # 👈 تغییر نام مدل به GPT-3.5-Turbo
+    MODEL_NAME = "openai/gpt-3.5-turbo" 
     
     if chat_id not in CONVERSATION_HISTORY:
         # 🟢 پیام سیستمی: سخت‌گیری کامل بر زبان فارسی و جهت‌گیری سیاسی
@@ -84,13 +84,21 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
             return final_response_content
 
         error_message = data.get('error', {}).get('message', 'خطای ناشناخته در پاسخ مدل')
+        # ثبت خطای پاسخ مدل در Log
+        print(f"❌ پاسخ مدل ناموفق: {error_message}")
         return f"❌ خطای پاسخ مدل: {error_message}"
 
     except requests.exceptions.HTTPError as e:
+        # ثبت خطای HTTP در Log
+        print(f"❌ خطای HTTP در اتصال به OpenRouter: {e}")
         return f"❌ خطای HTTP در اتصال به OpenRouter: {e}. (کلید OpenRouter را در Render چک کنید)"
     except requests.exceptions.RequestException as e:
+        # ثبت خطای شبکه در Log
+        print(f"❌ خطای شبکه: {e}")
         return f"❌ خطای شبکه: {e}"
     except Exception as e:
+        # ثبت خطای پردازش پاسخ در Log
+        print(f"❌ خطای پردازش پاسخ: {e}")
         return f"❌ خطای پردازش پاسخ: {e}"
 
 # 📥 گرفتن پیام‌های جدید از بله
@@ -102,6 +110,7 @@ def get_updates(offset: int | None) -> dict:
         res.raise_for_status()
         return res.json()
     except requests.exceptions.RequestException as e:
+        # این خطا معمولاً نشان‌دهنده یک مشکل موقت در بله یا شبکه است.
         print(f"❌ خطای درخواست getUpdates از بله: {e}")
         return {}
 
@@ -118,7 +127,7 @@ def send_message(chat_id: int, reply_text: str):
 def run_bot():
     """حلقه اصلی Polling برای دریافت و پردازش پیام‌ها"""
     global last_update_id
-    print("✅ ربات GPT-3.5-Turbo با قابلیت حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات GPT-3.5-Turbo فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
@@ -131,7 +140,6 @@ def run_bot():
                 
                 if chat_id and text:
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
-                    # 👈 فراخوانی با استفاده از chat_id و text
                     reply = ask_gpt35(chat_id, text) 
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
                     send_message(chat_id, reply)
@@ -143,7 +151,8 @@ def run_bot():
             time.sleep(1)
 
         except Exception as e:
-            print(f"🛑 خطای بحرانی در حلقه اصلی: {e}")
+            # 🛑 اگر خطای بحرانی رخ داد، آن را ثبت کرده و حلقه را ادامه می‌دهد (برای بازیابی)
+            print(f"🛑 خطای بحرانی در حلقه اصلی run_bot: {e}")
             time.sleep(5)
 
 # 💡 اجرای بات در ترد جداگانه
