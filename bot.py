@@ -24,10 +24,9 @@ DEEPSEEK_URL = "https://openrouter.ai/api/v1/chat/completions"
 app = Flask(__name__)
 last_update_id = 0
 
-# 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت (در سطح رم سرور)
-# {chat_id: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, ...]}
+# 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت
 CONVERSATION_HISTORY = {} 
-MAX_HISTORY_LENGTH = 10 # حداکثر 10 پیام (5 دور رفت و برگشت) برای صرفه‌جویی در توکن
+MAX_HISTORY_LENGTH = 10 
 
 # --- توابع ابزار (Tools) ---
 
@@ -57,7 +56,6 @@ def search_google(query: str) -> str:
         
         summary = []
         for result in organic_results:
-            # فیلتر کردن و کوتاه کردن نتایج برای جلوگیری از مصرف زیاد توکن
             summary.append({
                 "title": result.get("title")[:100], 
                 "snippet": result.get("snippet")[:200], 
@@ -73,8 +71,8 @@ def generate_image(prompt: str) -> str:
     """تولید عکس (API ساختگی - نیاز به اتصال به Replicate یا DALL-E)"""
     return json.dumps({
         "status": "success",
-        "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید {IMAGE_API_KEY} را برای اتصال به سرویس واقعی (مثل Replicate) جایگزین کنید. این یک آدرس پیش‌فرض است.",
-        "image_url_mock": "https://i.imgur.com/K0Y7F9P.png" # تصویر Placeholder
+        "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید IMAGE_API_KEY را برای اتصال به سرویس واقعی جایگزین کنید.",
+        "image_url_mock": "https://i.imgur.com/K0Y7F9P.png" 
     })
 
 # --- تعریف ابزار برای DeepSeek ---
@@ -120,21 +118,17 @@ TOOL_FUNCTIONS = {
 }
 
 
-# 💬 ارسال درخواست به مدل DeepSeek با قابلیت ابزار و حافظه
-def ask_deepseek(chat_id: int, user_text: str) -> str:
-    """ارسال متن کاربر به مدل DeepSeek با پشتیبانی از Tool Calling و حافظه"""
+# 💬 ارسال درخواست به مدل DeepSeek R1T2 Chimera
+def ask_deepseek_chimera(chat_id: int, user_text: str) -> str:
+    """ارسال متن کاربر به مدل DeepSeek R1T2 Chimera با پشتیبانی از Tool Calling و حافظه"""
     global CONVERSATION_HISTORY
     
     # ۱. بارگیری تاریخچه و تعریف پیام سیستمی
     if chat_id not in CONVERSATION_HISTORY:
-        # پیام سیستمی: تعیین رفتار مدل و استفاده از ابزارها
         system_message = {"role": "system", "content": "شما یک ربات چت فارسی هستید. اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها، یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید. محتوا را به زبان فارسی ارائه دهید."}
         CONVERSATION_HISTORY[chat_id] = [system_message]
     
-    # کوتاه کردن تاریخچه برای جلوگیری از مصرف زیاد توکن
     current_history = CONVERSATION_HISTORY[chat_id][-MAX_HISTORY_LENGTH:]
-    
-    # افزودن پیام جدید کاربر به تاریخچه موقت
     new_user_message = {"role": "user", "content": user_text}
     messages = current_history + [new_user_message]
     
@@ -142,8 +136,12 @@ def ask_deepseek(chat_id: int, user_text: str) -> str:
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    # 🔴 نام مدل به DeepSeek R1T2 Chimera تغییر یافت.
+    MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+    
     payload = {
-        "model": "deepseek/deepseek-moe-16b-chat", 
+        "model": MODEL_NAME, 
         "messages": messages,
         "tools": TOOLS, 
         "temperature": 0.5 
@@ -157,7 +155,7 @@ def ask_deepseek(chat_id: int, user_text: str) -> str:
         if "choices" in data and data["choices"]:
             choice = data["choices"][0]
             
-            # --- مدیریت Tool Calling (جستجو یا تولید عکس) ---
+            # --- مدیریت Tool Calling ---
             if "tool_calls" in choice["message"] and choice["message"]["tool_calls"]:
                 tool_call = choice["message"]["tool_calls"][0]
                 function_name = tool_call["function"]["name"]
@@ -176,7 +174,7 @@ def ask_deepseek(chat_id: int, user_text: str) -> str:
                     })
                     
                     final_payload = {
-                        "model": "deepseek/deepseek-moe-16b-chat",
+                        "model": MODEL_NAME,
                         "messages": messages,
                         "temperature": 0.5
                     }
@@ -187,7 +185,7 @@ def ask_deepseek(chat_id: int, user_text: str) -> str:
                     if "choices" in final_data and final_data["choices"]:
                         final_response_content = final_data["choices"][0]["message"]["content"].strip()
                         
-                        # به‌روزرسانی حافظه با پیام کاربر و پاسخ نهایی ربات
+                        # به‌روزرسانی حافظه
                         CONVERSATION_HISTORY[chat_id].append(new_user_message)
                         CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
                         
@@ -198,7 +196,7 @@ def ask_deepseek(chat_id: int, user_text: str) -> str:
             # --- پاسخ مستقیم مدل (بدون ابزار) ---
             final_response_content = choice["message"]["content"].strip()
             
-            # به‌روزرسانی حافظه با پیام کاربر و پاسخ ربات
+            # به‌روزرسانی حافظه
             CONVERSATION_HISTORY[chat_id].append(new_user_message)
             CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
             
@@ -236,7 +234,7 @@ def send_message(chat_id: int, reply_text: str):
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
     global last_update_id
-    print("✅ ربات DeepSeek با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات DeepSeek R1T2 Chimera با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
@@ -251,7 +249,7 @@ def run_bot():
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
                     
                     # فراخوانی تابع اصلی
-                    reply = ask_deepseek(chat_id, text)
+                    reply = ask_deepseek_chimera(chat_id, text)
                     
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
                     send_message(chat_id, reply)
