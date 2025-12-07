@@ -2,17 +2,17 @@ import requests
 import time
 import os
 import threading
+import json
 from flask import Flask
 
 # ⚠️ کلیدها از متغیرهای محیطی بارگذاری می‌شوند.
 BALE_TOKEN = os.environ.get('BALE_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
+SERPAPI_API_KEY = os.environ.get('SERPAPI_API_KEY') 
+IMAGE_API_KEY = os.environ.get('IMAGE_API_KEY') 
 
-# اگر کلیدها تنظیم نشده باشند، برنامه متوقف می‌شود.
 if not BALE_TOKEN or not OPENROUTER_API_KEY:
     print("❌ خطای پیکربندی: BALE_TOKEN یا OPENROUTER_API_KEY در متغیرهای محیطی تنظیم نشده است.")
-    # در محیط واقعی، بهتر است خطا داده شود. اما برای تست، می‌توان یک مقدار پیش‌فرض گذاشت.
-    # در این مرحله، ترجیح می‌دهیم برنامه متوقف شود تا بعداً در Render تنظیمات را انجام دهیم.
     exit(1)
 
 # 🔗 API URLs
@@ -23,44 +23,199 @@ DEEPSEEK_URL = "https://openrouter.ai/api/v1/chat/completions"
 app = Flask(__name__)
 last_update_id = 0
 
-@app.route("/")
-def home():
-    """نمایش وضعیت ربات"""
-    return "🤖 Bale + GPT-3.5-Turbo Bot is Running (Ready for Deployment)"
+# 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت (در سطح رم سرور)
+CONVERSATION_HISTORY = {} 
+MAX_HISTORY_LENGTH = 10 # حداکثر 10 پیام (5 دور رفت و برگشت) برای صرفه‌جویی در توکن
 
-# 💬 ارسال درخواست به مدل OpenRouter
-def ask_deepseek(user_text: str) -> str:
-    """ارسال متن کاربر به مدل GPT-3.5-Turbo از طریق OpenRouter"""
+# --- توابع ابزار (Tools) ---
+
+# (توابع search_google و generate_image همانند قبل باقی می‌مانند)
+def search_google(query: str) -> str:
+    """جستجوی زنده در گوگل با استفاده از SerpApi"""
+    if not SERPAPI_API_KEY:
+        return json.dumps({"error": "SerpApi key is missing. Cannot perform web search."})
+        
+    url = "https://serpapi.com/search"
+    params = {
+        "api_key": SERPAPI_API_KEY,
+        "engine": "google",
+        "q": query,
+        "location": "Tehran, Iran",
+        "gl": "ir",
+        "hl": "fa",
+        "num": 5
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        organic_results = data.get("organic_results", [])
+        if not organic_results:
+             return json.dumps({"error": "No search results found or key limit reached."})
+        
+        summary = []
+        for result in organic_results:
+            summary.append({
+                "title": result.get("title"),
+                "snippet": result.get("snippet"),
+                "source": result.get("source")
+            })
+        
+        return json.dumps(summary)
+        
+    except requests.exceptions.RequestException as e:
+        return json.dumps({"error": f"Search API error: {e}"})
+
+def generate_image(prompt: str) -> str:
+    """تولید عکس (API ساختگی - نیاز به اتصال به Replicate یا DALL-E)"""
+    return json.dumps({
+        "status": "success",
+        "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید {IMAGE_API_KEY} را برای اتصال به سرویس واقعی (مثل Replicate) جایگزین کنید.",
+        "image_url_mock": "https://example.com/placeholder-image.jpg"
+    })
+
+# --- تعریف ابزار برای Mixtral ---
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_google",
+            "description": "برای جستجوی اطلاعات به‌روز، اخبار یا داده‌های واقعی در گوگل از این تابع استفاده کنید. ورودی باید شامل عبارت جستجوی دقیق باشد.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "عبارت جستجو به زبان فارسی یا انگلیسی"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "برای تولید تصاویر یا نقاشی‌های مبتنی بر متن کاربر (Text-to-Image) از این تابع استفاده کنید. ورودی باید شامل توضیحات کامل تصویر باشد.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "توضیحات کامل و دقیق تصویری که باید تولید شود."
+                    }
+                },
+                "required": ["prompt"]
+            }
+        }
+    }
+]
+TOOL_FUNCTIONS = {
+    "search_google": search_google,
+    "generate_image": generate_image
+}
+
+
+# 💬 ارسال درخواست به مدل Mixtral با قابلیت ابزار و حافظه
+def ask_mixtral(chat_id: int, user_text: str) -> str:
+    """ارسال متن کاربر به مدل Mixtral با پشتیبانی از Tool Calling و حافظه"""
+    global CONVERSATION_HISTORY
+    
+    # ۱. بارگیری تاریخچه
+    if chat_id not in CONVERSATION_HISTORY:
+        # پیام سیستمی برای تعیین رفتار مدل
+        system_message = {"role": "system", "content": "شما یک ربات چت فارسی در بله هستید. اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید."}
+        CONVERSATION_HISTORY[chat_id] = [system_message]
+    
+    # کوتاه کردن تاریخچه برای جلوگیری از مصرف زیاد توکن
+    current_history = CONVERSATION_HISTORY[chat_id][-MAX_HISTORY_LENGTH:]
+    
+    # افزودن پیام جدید کاربر به تاریخچه موقت
+    new_user_message = {"role": "user", "content": user_text}
+    messages = current_history + [new_user_message]
+    
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openai/gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": user_text}],
-        "temperature": 0.7
+        "model": "mistralai/mixtral-8x7b-instruct", 
+        "messages": messages,
+        "tools": TOOLS, 
+        "temperature": 0.5 
     }
+    
     try:
-        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=45)
+        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=60)
         resp.raise_for_status() 
         data = resp.json()
 
         if "choices" in data and data["choices"]:
-            return data["choices"][0]["message"]["content"].strip()
+            choice = data["choices"][0]
+            
+            # --- مدیریت Tool Calling (جستجو یا تولید عکس) ---
+            if "tool_calls" in choice["message"] and choice["message"]["tool_calls"]:
+                tool_call = choice["message"]["tool_calls"][0]
+                function_name = tool_call["function"]["name"]
+                
+                if function_name in TOOL_FUNCTIONS:
+                    arguments = json.loads(tool_call["function"]["arguments"])
+                    tool_output = TOOL_FUNCTIONS[function_name](**arguments)
+                    
+                    # مرحله دوم: ارسال خروجی ابزار به مدل
+                    messages.append(choice["message"]) 
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "name": function_name,
+                        "content": tool_output
+                    })
+                    
+                    # درخواست نهایی برای پاسخ نهایی با خروجی ابزار
+                    final_payload = {
+                        "model": "mistralai/mixtral-8x7b-instruct",
+                        "messages": messages,
+                        "temperature": 0.5
+                    }
+                    final_resp = requests.post(DEEPSEEK_URL, headers=headers, json=final_payload, timeout=60)
+                    final_resp.raise_for_status()
+                    final_data = final_resp.json()
+
+                    if "choices" in final_data and final_data["choices"]:
+                        final_response_content = final_data["choices"][0]["message"]["content"].strip()
+                        
+                        # به‌روزرسانی حافظه با پیام کاربر و پاسخ نهایی ربات
+                        CONVERSATION_HISTORY[chat_id].append(new_user_message)
+                        CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
+                        
+                        return final_response_content
+                    return "❌ مدل نتوانست با خروجی ابزار پاسخ نهایی را تولید کند."
+
+
+            # --- پاسخ مستقیم مدل (بدون ابزار) ---
+            final_response_content = choice["message"]["content"].strip()
+            
+            # به‌روزرسانی حافظه با پیام کاربر و پاسخ ربات
+            CONVERSATION_HISTORY[chat_id].append(new_user_message)
+            CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
+            
+            return final_response_content
 
         error_message = data.get('error', {}).get('message', 'خطای ناشناخته در پاسخ مدل')
         return f"❌ خطای پاسخ مدل: {error_message}"
 
     except requests.exceptions.HTTPError as e:
-        return f"❌ خطای HTTP در اتصال به OpenRouter: {e}. (کلید OpenRouter را در Render چک کنید)"
+        return f"❌ خطای HTTP در اتصال: {e}. (کلید OpenRouter را چک کنید)"
     except requests.exceptions.RequestException as e:
         return f"❌ خطای شبکه: {e}"
     except Exception as e:
         return f"❌ خطای پردازش پاسخ: {e}"
 
-# 📥 گرفتن پیام‌های جدید از بله
+# --- توابع ربات بله ---
+
 def get_updates(offset: int | None) -> dict:
-    """دریافت آپدیت‌های جدید از API بله"""
     params = {'offset': offset} if offset else {}
     try:
         res = requests.get(f"{BALE_BASE}/getUpdates", params=params, timeout=15)
@@ -70,9 +225,7 @@ def get_updates(offset: int | None) -> dict:
         print(f"❌ خطای درخواست getUpdates از بله: {e}")
         return {}
 
-# 📤 ارسال پاسخ به کاربر
 def send_message(chat_id: int, reply_text: str):
-    """ارسال پاسخ به کاربر در بله"""
     payload = {'chat_id': chat_id, 'text': reply_text}
     try:
         requests.post(f"{BALE_BASE}/sendMessage", json=payload, timeout=10)
@@ -81,9 +234,8 @@ def send_message(chat_id: int, reply_text: str):
 
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
-    """حلقه اصلی Polling برای دریافت و پردازش پیام‌ها"""
     global last_update_id
-    print("✅ ربات بله + OpenRouter فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات Mixtral با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
@@ -96,7 +248,10 @@ def run_bot():
                 
                 if chat_id and text:
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
-                    reply = ask_deepseek(text)
+                    
+                    # ارسال chat_id برای مدیریت حافظه
+                    reply = ask_mixtral(chat_id, text)
+                    
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
                     send_message(chat_id, reply)
                     
@@ -112,13 +267,10 @@ def run_bot():
 
 # 💡 اجرای بات در ترد جداگانه
 def start_polling():
-    """شروع حلقه Polling در یک Thread جداگانه"""
     threading.Thread(target=run_bot, daemon=True).start()
 
 # 🚀 اجرای Flask Server
 if __name__ == "__main__":
     start_polling()
-    # پورت 10000 یا 5000 برای محیط‌های ابری رایج است.
     port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 سرور Flask در حال اجرا بر روی پورت {port}...")
     app.run(host="0.0.0.0", port=port)
