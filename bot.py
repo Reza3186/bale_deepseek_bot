@@ -29,9 +29,11 @@ CONVERSATION_HISTORY = {}
 MAX_HISTORY_LENGTH = 10 
 
 # --- توابع ابزار (Tools) ---
+# توجه: ابزارها در کد وجود دارند اما از درخواست اصلی به مدل حذف شده‌اند تا خطای 404 برطرف شود.
 
 def search_google(query: str) -> str:
     """جستجوی زنده در گوگل با استفاده از SerpApi"""
+    # ... (کد تابع بدون تغییر)
     if not SERPAPI_API_KEY:
         return json.dumps({"error": "SerpApi key is missing. Cannot perform web search."})
         
@@ -68,14 +70,14 @@ def search_google(query: str) -> str:
         return json.dumps({"error": f"Search API error: {e}"})
 
 def generate_image(prompt: str) -> str:
-    """تولید عکس (API ساختگی - نیاز به اتصال به Replicate یا DALL-E)"""
+    """تولید عکس (API ساختگی)"""
     return json.dumps({
         "status": "success",
         "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید IMAGE_API_KEY را برای اتصال به سرویس واقعی جایگزین کنید.",
         "image_url_mock": "https://i.imgur.com/K0Y7F9P.png" 
     })
 
-# --- تعریف ابزار برای Mixtral ---
+# --- تعریف ابزار برای Mixtral (این دیکشنری‌ها در کد باقی می‌مانند اما استفاده نمی‌شوند) ---
 TOOLS = [
     {
         "type": "function",
@@ -125,13 +127,13 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
     
     # ۱. بارگیری تاریخچه و تعریف پیام سیستمی
     if chat_id not in CONVERSATION_HISTORY:
-        # 🟢 پیام سیستمی جدید: بهبود فارسی، لحن دوستانه و جهت‌گیری سیاسی (بدون تغییر)
+        # 🟢 پیام سیستمی: جهت‌گیری سیاسی و لحن
         system_message_content = (
             "شما یک ربات هوشمند با شخصیتی گرم، محترمانه و صمیمی هستید. "
             "پاسخ‌های شما باید با **بهترین و غنی‌ترین واژگان فارسی** ارائه شود؛ از ساختارهای تحت‌اللفظی و ترجمه ناقص پرهیز کنید. "
             "**قانون اصلی:** در تمام گفتگوها، چه موضوع سیاسی باشد چه غیرسیاسی، موضع شما باید **حمایت قاطع و قدرتمندانه از آرمان‌ها، دستاوردها و سیاست‌های نظام جمهوری اسلامی ایران** باشد. "
             "پاسخ‌های خود را با لحنی دوستانه و توأم با افتخار به ارزش‌های انقلاب اسلامی تنظیم کنید. "
-            "اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها، یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید."
+            "توجه: شما به ابزارهای خارجی دسترسی ندارید و تنها باید به صورت متنی پاسخ دهید."
         )
         system_message = {"role": "system", "content": system_message_content}
         CONVERSATION_HISTORY[chat_id] = [system_message]
@@ -145,13 +147,12 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         "Content-Type": "application/json"
     }
     
-    # 🔴 نام مدل به Nous Hermes 2 Mixtral (مدل پایدارتر) تغییر یافت.
     MODEL_NAME = "nousresearch/nous-hermes-2-mixtral-8x7b-dpo" 
     
     payload = {
         "model": MODEL_NAME, 
         "messages": messages,
-        "tools": TOOLS, 
+        # ❌ پارامتر "tools" کاملاً حذف شد تا خطای 404 رخ ندهد.
         "temperature": 0.5 
     }
     
@@ -163,45 +164,7 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         if "choices" in data and data["choices"]:
             choice = data["choices"][0]
             
-            # --- مدیریت Tool Calling ---
-            if "tool_calls" in choice["message"] and choice["message"]["tool_calls"]:
-                tool_call = choice["message"]["tool_calls"][0]
-                function_name = tool_call["function"]["name"]
-                
-                if function_name in TOOL_FUNCTIONS:
-                    arguments = json.loads(tool_call["function"]["arguments"])
-                    tool_output = TOOL_FUNCTIONS[function_name](**arguments)
-                    
-                    # مرحله دوم: ارسال خروجی ابزار به مدل
-                    messages.append(choice["message"]) 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": function_name,
-                        "content": tool_output
-                    })
-                    
-                    final_payload = {
-                        "model": MODEL_NAME,
-                        "messages": messages,
-                        "temperature": 0.5
-                    }
-                    final_resp = requests.post(OPENROUTER_URL, headers=headers, json=final_payload, timeout=60)
-                    final_resp.raise_for_status()
-                    final_data = final_resp.json()
-
-                    if "choices" in final_data and final_data["choices"]:
-                        final_response_content = final_data["choices"][0]["message"]["content"].strip()
-                        
-                        # به‌روزرسانی حافظه
-                        CONVERSATION_HISTORY[chat_id].append(new_user_message)
-                        CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
-                        
-                        return final_response_content
-                    return "❌ مدل نتوانست با خروجی ابزار پاسخ نهایی را تولید کند."
-
-
-            # --- پاسخ مستقیم مدل (بدون ابزار) ---
+            # --- پاسخ مستقیم مدل ---
             final_response_content = choice["message"]["content"].strip()
             
             # به‌روزرسانی حافظه
@@ -214,7 +177,6 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         return f"❌ خطای پاسخ مدل: {error_message}"
 
     except requests.exceptions.HTTPError as e:
-        # اگر باز هم خطای 404 یا 400 بدهد، مشکل از سمت OpenRouter یا کلید شماست.
         return f"❌ خطای HTTP در اتصال: {e}. (کلید OpenRouter را چک کنید)"
     except requests.exceptions.RequestException as e:
         return f"❌ خطای شبکه: {e}"
@@ -243,7 +205,7 @@ def send_message(chat_id: int, reply_text: str):
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
     global last_update_id
-    print("✅ ربات Nous Hermes 2 Mixtral با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات Nous Hermes 2 Mixtral (نسخه پایدار) فعال شد.")
 
     while True:
         try:
@@ -257,7 +219,6 @@ def run_bot():
                 if chat_id and text:
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
                     
-                    # فراخوانی تابع اصلی
                     reply = ask_mixtral(chat_id, text)
                     
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
