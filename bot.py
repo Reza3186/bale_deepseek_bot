@@ -19,7 +19,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # 🌐 Flask app و متغیر جهانی برای آخرین آپدیت
 app = Flask(__name__)
-last_update_id = 0
+# 💡 این متغیر باید پیام‌هایی را که قبلاً پردازش شده‌اند، فیلتر کند.
+last_processed_update_id = 0 
 
 # 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت
 CONVERSATION_HISTORY = {} 
@@ -98,9 +99,11 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
         return f"❌ خطای پردازش پاسخ: {e}"
 
 def get_updates(offset: int | None) -> dict:
+    # 💡 ارسال last_processed_update_id + 1 به عنوان offset 
     params = {'offset': offset} if offset else {}
     try:
-        res = requests.get(f"{BALE_BASE}/getUpdates", params=params, timeout=15)
+        # 💡 زمان TimeOut را برای حالت Cold Start کمی بیشتر می‌کنیم.
+        res = requests.get(f"{BALE_BASE}/getUpdates", params=params, timeout=30) 
         res.raise_for_status()
         return res.json()
     except requests.exceptions.RequestException as e:
@@ -116,39 +119,51 @@ def send_message(chat_id: int, reply_text: str):
 
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot_in_main_thread():
-    """حلقه اصلی Polling با اصلاحیه ضد تکرار پیام"""
-    global last_update_id
+    """حلقه اصلی Polling با فیلتر قوی ضد تکرار پیام"""
+    global last_processed_update_id
     print("✅ ربات GPT-3.5-Turbo فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
-            updates = get_updates(last_update_id)
+            # 1. درخواست آپدیت‌ها با offset آخرین پیام پردازش شده + ۱
+            updates = get_updates(last_processed_update_id + 1)
+            
+            # متغیری برای ذخیره بالاترین update_id در این دور از آپدیت‌ها
+            highest_update_id = last_processed_update_id 
             
             for upd in updates.get("result", []):
-                # 1. 🔑 دریافت update_id
+                
                 current_update_id = upd.get("update_id", 0)
                 
+                # 2. 🛡️ فیلتر قوی: فقط پیام‌هایی را که جدیدتر از آخرین پیام پردازش شده هستند، بپذیریم.
+                if current_update_id <= last_processed_update_id:
+                    # اگر پیامی تکراری یا قدیمی است، آن را نادیده بگیر
+                    continue 
+
                 message = upd.get("message", {})
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text")
                 
-                # 2. ⚡️ تغییر حیاتی: به‌روزرسانی offset بلافاصله برای جلوگیری از تکرار
-                # ما این پیام را دیده‌ایم، پس حتی اگر پردازش طول بکشد، نباید آن را دوباره بخواهیم.
-                if current_update_id >= last_update_id:
-                     last_update_id = current_update_id + 1
-                     
                 if chat_id and text:
-                    print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
+                    print(f"[{chat_id}] 📩 پیام دریافت شد: {text} (Update ID: {current_update_id})")
                     
                     # 💡 ارسال پیام سریع برای هشدار دادن به کاربر
                     send_message(chat_id, "⏳ لطفا صبر کنید، سرور ربات در حال فعال‌سازی مجدد و پردازش درخواست شما است...")
                     
-                    # 💡 حالا پردازش سنگین را انجام دهید
+                    # 💡 پردازش سنگین را انجام دهید
                     reply = ask_gpt35(chat_id, text)
                     
                     # 💡 ارسال پاسخ نهایی
                     send_message(chat_id, reply) 
+                    
+                # 3. به‌روزرسانی بالاترین ID در این دور
+                if current_update_id > highest_update_id:
+                    highest_update_id = current_update_id
             
+            # 4. 🔑 به‌روزرسانی last_processed_update_id پس از پایان حلقه
+            if highest_update_id > last_processed_update_id:
+                last_processed_update_id = highest_update_id
+
             time.sleep(1) 
 
         except Exception as e:
