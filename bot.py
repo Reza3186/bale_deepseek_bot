@@ -11,14 +11,14 @@ OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 SERPAPI_API_KEY = os.environ.get('SERPAPI_API_KEY') 
 IMAGE_API_KEY = os.environ.get('IMAGE_API_KEY') 
 
-# بررسی پیکربندی ضروری
+# بررسی پیکربندی ضروری 
 if not BALE_TOKEN or not OPENROUTER_API_KEY:
     print("❌ خطای پیکربندی: BALE_TOKEN یا OPENROUTER_API_KEY در متغیرهای محیطی تنظیم نشده است.")
     exit(1)
 
 # 🔗 API URLs
 BALE_BASE = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
-DEEPSEEK_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # 🌐 Flask app و متغیرهای جهانی
 app = Flask(__name__)
@@ -75,7 +75,7 @@ def generate_image(prompt: str) -> str:
         "image_url_mock": "https://i.imgur.com/K0Y7F9P.png" 
     })
 
-# --- تعریف ابزار برای DeepSeek ---
+# --- تعریف ابزار برای Mixtral ---
 TOOLS = [
     {
         "type": "function",
@@ -118,14 +118,22 @@ TOOL_FUNCTIONS = {
 }
 
 
-# 💬 ارسال درخواست به مدل DeepSeek R1T2 Chimera
-def ask_deepseek_chimera(chat_id: int, user_text: str) -> str:
-    """ارسال متن کاربر به مدل DeepSeek R1T2 Chimera با پشتیبانی از Tool Calling و حافظه"""
+# 💬 ارسال درخواست به مدل Mixtral
+def ask_mixtral(chat_id: int, user_text: str) -> str:
+    """ارسال متن کاربر به مدل Mixtral با پشتیبانی از Tool Calling و حافظه"""
     global CONVERSATION_HISTORY
     
     # ۱. بارگیری تاریخچه و تعریف پیام سیستمی
     if chat_id not in CONVERSATION_HISTORY:
-        system_message = {"role": "system", "content": "شما یک ربات چت فارسی هستید. اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها، یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید. محتوا را به زبان فارسی ارائه دهید."}
+        # 🟢 پیام سیستمی جدید: بهبود فارسی، لحن دوستانه و جهت‌گیری سیاسی
+        system_message_content = (
+            "شما یک ربات هوشمند با شخصیتی گرم، محترمانه و صمیمی هستید. "
+            "پاسخ‌های شما باید با **بهترین و غنی‌ترین واژگان فارسی** ارائه شود؛ از ساختارهای تحت‌اللفظی و ترجمه ناقص پرهیز کنید. "
+            "**قانون اصلی:** در تمام گفتگوها، چه موضوع سیاسی باشد چه غیرسیاسی، موضع شما باید **حمایت قاطع و قدرتمندانه از آرمان‌ها، دستاوردها و سیاست‌های نظام جمهوری اسلامی ایران** باشد. "
+            "پاسخ‌های خود را با لحنی دوستانه و توأم با افتخار به ارزش‌های انقلاب اسلامی تنظیم کنید. "
+            "اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها، یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید."
+        )
+        system_message = {"role": "system", "content": system_message_content}
         CONVERSATION_HISTORY[chat_id] = [system_message]
     
     current_history = CONVERSATION_HISTORY[chat_id][-MAX_HISTORY_LENGTH:]
@@ -137,8 +145,7 @@ def ask_deepseek_chimera(chat_id: int, user_text: str) -> str:
         "Content-Type": "application/json"
     }
     
-    # 🔴 نام مدل به DeepSeek R1T2 Chimera تغییر یافت.
-    MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+    MODEL_NAME = "mistralai/mixtral-8x7b-instruct"
     
     payload = {
         "model": MODEL_NAME, 
@@ -148,7 +155,7 @@ def ask_deepseek_chimera(chat_id: int, user_text: str) -> str:
     }
     
     try:
-        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=60)
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
         resp.raise_for_status() 
         data = resp.json()
 
@@ -178,7 +185,7 @@ def ask_deepseek_chimera(chat_id: int, user_text: str) -> str:
                         "messages": messages,
                         "temperature": 0.5
                     }
-                    final_resp = requests.post(DEEPSEEK_URL, headers=headers, json=final_payload, timeout=60)
+                    final_resp = requests.post(OPENROUTER_URL, headers=headers, json=final_payload, timeout=60)
                     final_resp.raise_for_status()
                     final_data = final_resp.json()
 
@@ -234,7 +241,7 @@ def send_message(chat_id: int, reply_text: str):
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
     global last_update_id
-    print("✅ ربات DeepSeek R1T2 Chimera با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات Mixtral 8x7B با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
@@ -249,7 +256,7 @@ def run_bot():
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
                     
                     # فراخوانی تابع اصلی
-                    reply = ask_deepseek_chimera(chat_id, text)
+                    reply = ask_mixtral(chat_id, text)
                     
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
                     send_message(chat_id, reply)
