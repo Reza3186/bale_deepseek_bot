@@ -1,7 +1,6 @@
 import requests
 import time
 import os
-import threading
 import json
 from flask import Flask
 
@@ -24,14 +23,19 @@ last_update_id = 0
 
 # 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت
 CONVERSATION_HISTORY = {} 
-MAX_HISTORY_LENGTH = 10 # حداکثر 10 پیام (5 دور رفت و برگشت) برای حفظ حافظه.
+MAX_HISTORY_LENGTH = 10 
 
 @app.route("/")
 def home():
-    """نمایش وضعیت ربات"""
-    return "🤖 Bale + GPT-3.5-Turbo Bot is Running"
+    """این مسیر اصلی برای بیدار کردن سرویس است و حلقه Polling را اجرا می‌کند."""
+    # اجرای مستقیم حلقه Polling برای جلوگیری از مشکل threading در Render Free Tier
+    run_bot_in_main_thread()
+    # این خط هرگز اجرا نخواهد شد
+    return "Bot Polling Started"
 
-# 💬 ارسال درخواست به مدل GPT-3.5-Turbo
+
+# --- توابع مدل و پیام‌رسانی (بدون تغییر در محتوا) ---
+
 def ask_gpt35(chat_id: int, user_text: str) -> str:
     """ارسال متن کاربر به مدل GPT-3.5-Turbo با پشتیبانی از حافظه و شخصیت‌پردازی"""
     global CONVERSATION_HISTORY
@@ -39,7 +43,6 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
     MODEL_NAME = "openai/gpt-3.5-turbo" 
     
     if chat_id not in CONVERSATION_HISTORY:
-        # 🟢 پیام سیستمی: سخت‌گیری کامل بر زبان فارسی و جهت‌گیری سیاسی (نسخه اصلاح‌شده)
         system_message_content = (
             "شما یک دستیار هوش مصنوعی با بالاترین سطح دانش زبان **فارسی اصیل و معیار** هستید. "
             "قانون زبان: در تمام پاسخ‌ها، از **ترجمه تحت‌اللفظی، جملات مبهم و استفاده از ساختارهای زبان انگلیسی در فارسی** به شدت پرهیز کنید. "
@@ -53,7 +56,6 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
         system_message = {"role": "system", "content": system_message_content}
         CONVERSATION_HISTORY[chat_id] = [system_message]
     
-    # مدیریت و محدود کردن تاریخچه برای جلوگیری از کرش
     current_history = CONVERSATION_HISTORY[chat_id][-MAX_HISTORY_LENGTH:]
     new_user_message = {"role": "user", "content": user_text}
     messages = current_history + [new_user_message]
@@ -77,7 +79,6 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
         if "choices" in data and data["choices"]:
             final_response_content = data["choices"][0]["message"]["content"].strip()
             
-            # به‌روزرسانی حافظه
             CONVERSATION_HISTORY[chat_id].append(new_user_message)
             CONVERSATION_HISTORY[chat_id].append({"role": "assistant", "content": final_response_content})
 
@@ -97,9 +98,7 @@ def ask_gpt35(chat_id: int, user_text: str) -> str:
         print(f"❌ خطای پردازش پاسخ: {e}")
         return f"❌ خطای پردازش پاسخ: {e}"
 
-# 📥 گرفتن پیام‌های جدید از بله
 def get_updates(offset: int | None) -> dict:
-    """دریافت آپدیت‌های جدید از API بله"""
     params = {'offset': offset} if offset else {}
     try:
         res = requests.get(f"{BALE_BASE}/getUpdates", params=params, timeout=15)
@@ -109,7 +108,6 @@ def get_updates(offset: int | None) -> dict:
         print(f"❌ خطای درخواست getUpdates از بله: {e}")
         return {}
 
-# 📤 ارسال پاسخ به کاربر
 def send_message(chat_id: int, reply_text: str):
     """ارسال پاسخ به کاربر در بله"""
     payload = {'chat_id': chat_id, 'text': reply_text}
@@ -118,9 +116,38 @@ def send_message(chat_id: int, reply_text: str):
     except requests.exceptions.RequestException as e:
         print(f"❌ خطای ارسال پیام به چت {chat_id}: {e}")
 
+# --- تابع جدید برای مدیریت پیام و ارسال هشدار ---
+
+def handle_message(chat_id: int, text: str):
+    """پیام را پردازش می‌کند و اگر تأخیر طولانی بود، پیام هشدار ارسال می‌کند."""
+    
+    start_time = time.time()
+    
+    # 1. تلاش برای ارسال درخواست به مدل
+    reply = ask_gpt35(chat_id, text)
+    end_time = time.time()
+    
+    # 2. بررسی زمان پاسخ (اگر بیشتر از 4 ثانیه طول کشید، یعنی Cold Start بوده)
+    if end_time - start_time > 4:
+        # 3. ارسال پیام "صبر کنید" به عنوان یک پیام جداگانه (Optional - فقط اگر پیام اول ارسال نشود، مفید است)
+        # در این ساختار Polling، چون پاسخ مدل آماده است، ما مستقیم پاسخ نهایی را می‌فرستیم.
+        # اما برای اطمینان از اینکه کاربر حداقل یک پاسخ سریع دریافت کند (در موارد بحرانی)، 
+        # ما از یک مکانیسم متفاوت استفاده می‌کنیم.
+        
+        # 💡 روش جایگزین: اگر زمان پاسخ بسیار زیاد است، ما فرض می‌کنیم تأخیر وجود دارد و این را ثبت می‌کنیم.
+        # در این ساختار Polling، این تنها کاری است که می‌توانیم انجام دهیم:
+        print(f"⚠️ زمان پاسخ مدل طولانی بود: {end_time - start_time:.2f} ثانیه. احتمال Cold Start.")
+        send_message(chat_id, "✅ فعال‌سازی انجام شد! در پاسخ به پیام شما:")
+        
+        # نکته: در بات‌های Polling، چون نمی‌توانیم مطمئن شویم پیام هشدار قبل از پاسخ نهایی برسد، 
+        # بهتر است پیام هشدار را قبل از فراخوانی ask_gpt35 ارسال کنیم.
+    
+    # 4. ارسال پاسخ نهایی
+    send_message(chat_id, reply)
+
 # 🤖 تابع اصلی اجرای ربات با polling
-def run_bot():
-    """حلقه اصلی Polling با مکانیسم بازیابی (Recovery Mechanism)"""
+def run_bot_in_main_thread():
+    """حلقه اصلی Polling که مستقیماً در حلقه اصلی اجرا می‌شود"""
     global last_update_id
     print("✅ ربات GPT-3.5-Turbo فعال شد. در حال گوش دادن به پیام‌ها...")
 
@@ -135,28 +162,26 @@ def run_bot():
                 
                 if chat_id and text:
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
-                    reply = ask_gpt35(chat_id, text) 
-                    print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
-                    send_message(chat_id, reply)
+                    
+                    # 💡 ارسال پیام سریع برای هشدار دادن به کاربر
+                    send_message(chat_id, "⏳ لطفا صبر کنید، سرور ربات در حال فعال‌سازی مجدد و پردازش درخواست شما است...")
+                    
+                    # 💡 حالا پردازش سنگین را انجام دهید و پاسخ اصلی را بفرستید
+                    reply = ask_gpt35(chat_id, text)
+                    
+                    # 💡 برای جلوگیری از تداخل پیام، پاسخ اصلی را مستقیماً بعد از هشدار بفرستید.
+                    send_message(chat_id, reply) 
                     
                 current_update_id = upd.get("update_id", 0)
                 if current_update_id >= last_update_id:
                      last_update_id = current_update_id + 1
             
-            time.sleep(1) # تأخیر کم برای جلوگیری از مصرف بیش از حد CPU
+            time.sleep(1) 
 
         except Exception as e:
             print(f"🛑 خطای بحرانی پیش‌بینی نشده در حلقه اصلی: {e}")
             time.sleep(5)
 
-# 💡 اجرای بات در ترد جداگانه
-def start_polling():
-    """شروع حلقه Polling در یک Thread جداگانه"""
-    threading.Thread(target=run_bot, daemon=True).start()
-
 # 🚀 اجرای Flask Server
 if __name__ == "__main__":
-    start_polling()
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 سرور Flask در حال اجرا بر روی پورت {port}...")
-    app.run(host="0.0.0.0", port=port)
+    run_bot_in_main_thread()
