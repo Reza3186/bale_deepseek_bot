@@ -5,12 +5,13 @@ import threading
 import json
 from flask import Flask
 
-# ⚠️ کلیدها از متغیرهای محیطی بارگذاری می‌شوند.
+# ⚠️ کلیدها از متغیرهای محیطی (Environment Variables) بارگذاری می‌شوند.
 BALE_TOKEN = os.environ.get('BALE_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 SERPAPI_API_KEY = os.environ.get('SERPAPI_API_KEY') 
 IMAGE_API_KEY = os.environ.get('IMAGE_API_KEY') 
 
+# بررسی پیکربندی ضروری
 if not BALE_TOKEN or not OPENROUTER_API_KEY:
     print("❌ خطای پیکربندی: BALE_TOKEN یا OPENROUTER_API_KEY در متغیرهای محیطی تنظیم نشده است.")
     exit(1)
@@ -19,17 +20,17 @@ if not BALE_TOKEN or not OPENROUTER_API_KEY:
 BALE_BASE = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 DEEPSEEK_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# 🌐 Flask app و متغیر جهانی برای آخرین آپدیت
+# 🌐 Flask app و متغیرهای جهانی
 app = Flask(__name__)
 last_update_id = 0
 
 # 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت (در سطح رم سرور)
+# {chat_id: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, ...]}
 CONVERSATION_HISTORY = {} 
 MAX_HISTORY_LENGTH = 10 # حداکثر 10 پیام (5 دور رفت و برگشت) برای صرفه‌جویی در توکن
 
 # --- توابع ابزار (Tools) ---
 
-# (توابع search_google و generate_image همانند قبل باقی می‌مانند)
 def search_google(query: str) -> str:
     """جستجوی زنده در گوگل با استفاده از SerpApi"""
     if not SERPAPI_API_KEY:
@@ -56,9 +57,10 @@ def search_google(query: str) -> str:
         
         summary = []
         for result in organic_results:
+            # فیلتر کردن و کوتاه کردن نتایج برای جلوگیری از مصرف زیاد توکن
             summary.append({
-                "title": result.get("title"),
-                "snippet": result.get("snippet"),
+                "title": result.get("title")[:100], 
+                "snippet": result.get("snippet")[:200], 
                 "source": result.get("source")
             })
         
@@ -71,17 +73,17 @@ def generate_image(prompt: str) -> str:
     """تولید عکس (API ساختگی - نیاز به اتصال به Replicate یا DALL-E)"""
     return json.dumps({
         "status": "success",
-        "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید {IMAGE_API_KEY} را برای اتصال به سرویس واقعی (مثل Replicate) جایگزین کنید.",
-        "image_url_mock": "https://example.com/placeholder-image.jpg"
+        "message": f"قابلیت تولید عکس برای درخواست '{prompt}' فعال شد. لطفاً کلید {IMAGE_API_KEY} را برای اتصال به سرویس واقعی (مثل Replicate) جایگزین کنید. این یک آدرس پیش‌فرض است.",
+        "image_url_mock": "https://i.imgur.com/K0Y7F9P.png" # تصویر Placeholder
     })
 
-# --- تعریف ابزار برای Mixtral ---
+# --- تعریف ابزار برای DeepSeek ---
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "search_google",
-            "description": "برای جستجوی اطلاعات به‌روز، اخبار یا داده‌های واقعی در گوگل از این تابع استفاده کنید. ورودی باید شامل عبارت جستجوی دقیق باشد.",
+            "description": "برای جستجوی اطلاعات به‌روز، اخبار، قیمت‌ها یا داده‌های واقعی در گوگل از این تابع استفاده کنید. ورودی باید شامل عبارت جستجوی دقیق باشد.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -118,15 +120,15 @@ TOOL_FUNCTIONS = {
 }
 
 
-# 💬 ارسال درخواست به مدل Mixtral با قابلیت ابزار و حافظه
-def ask_mixtral(chat_id: int, user_text: str) -> str:
-    """ارسال متن کاربر به مدل Mixtral با پشتیبانی از Tool Calling و حافظه"""
+# 💬 ارسال درخواست به مدل DeepSeek با قابلیت ابزار و حافظه
+def ask_deepseek(chat_id: int, user_text: str) -> str:
+    """ارسال متن کاربر به مدل DeepSeek با پشتیبانی از Tool Calling و حافظه"""
     global CONVERSATION_HISTORY
     
-    # ۱. بارگیری تاریخچه
+    # ۱. بارگیری تاریخچه و تعریف پیام سیستمی
     if chat_id not in CONVERSATION_HISTORY:
-        # پیام سیستمی برای تعیین رفتار مدل
-        system_message = {"role": "system", "content": "شما یک ربات چت فارسی در بله هستید. اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید."}
+        # پیام سیستمی: تعیین رفتار مدل و استفاده از ابزارها
+        system_message = {"role": "system", "content": "شما یک ربات چت فارسی هستید. اگر کاربر سؤالی درباره اطلاعات به‌روز، قیمت‌ها، یا اخبار پرسید، از ابزار search_google استفاده کنید. اگر درخواست تولید عکس کرد، از generate_image استفاده کنید. در غیر این صورت، به طور طبیعی پاسخ دهید. محتوا را به زبان فارسی ارائه دهید."}
         CONVERSATION_HISTORY[chat_id] = [system_message]
     
     # کوتاه کردن تاریخچه برای جلوگیری از مصرف زیاد توکن
@@ -141,7 +143,7 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "mistralai/mixtral-8x7b-instruct", 
+        "model": "deepseek/deepseek-moe-16b-chat", 
         "messages": messages,
         "tools": TOOLS, 
         "temperature": 0.5 
@@ -173,9 +175,8 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
                         "content": tool_output
                     })
                     
-                    # درخواست نهایی برای پاسخ نهایی با خروجی ابزار
                     final_payload = {
-                        "model": "mistralai/mixtral-8x7b-instruct",
+                        "model": "deepseek/deepseek-moe-16b-chat",
                         "messages": messages,
                         "temperature": 0.5
                     }
@@ -235,7 +236,7 @@ def send_message(chat_id: int, reply_text: str):
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
     global last_update_id
-    print("✅ ربات Mixtral با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات DeepSeek با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
@@ -249,8 +250,8 @@ def run_bot():
                 if chat_id and text:
                     print(f"[{chat_id}] 📩 پیام دریافت شد: {text}")
                     
-                    # ارسال chat_id برای مدیریت حافظه
-                    reply = ask_mixtral(chat_id, text)
+                    # فراخوانی تابع اصلی
+                    reply = ask_deepseek(chat_id, text)
                     
                     print(f"[{chat_id}] 📨 پاسخ آماده: {reply[:50]}...")
                     send_message(chat_id, reply)
