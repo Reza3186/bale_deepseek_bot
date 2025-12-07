@@ -8,7 +8,6 @@ from flask import Flask
 BALE_TOKEN = os.environ.get('BALE_TOKEN')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 
-# بررسی اجباری کلیدها هنگام شروع برنامه
 if not BALE_TOKEN or not OPENROUTER_API_KEY:
     print("❌ خطای پیکربندی: BALE_TOKEN یا OPENROUTER_API_KEY تنظیم نشده است.")
     exit(1)
@@ -19,8 +18,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # 🌐 Flask app و متغیر جهانی برای آخرین آپدیت
 app = Flask(__name__)
-# 💡 این متغیر باید پیام‌هایی را که قبلاً پردازش شده‌اند، فیلتر کند.
-last_processed_update_id = 0 
+# 💡 متغیر آفست برای API بله
+bale_offset = 0 
 
 # 🧠 حافظه گفتگو: ذخیره تاریخچه پیام‌ها برای هر چت
 CONVERSATION_HISTORY = {} 
@@ -117,27 +116,41 @@ def send_message(chat_id: int, reply_text: str):
 
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot_in_main_thread():
-    """حلقه اصلی Polling با مکانیسم ضد تکرار پیام نهایی"""
-    global last_processed_update_id
+    """حلقه اصلی Polling با مکانیسم ضد تکرار پیام نهایی و فیلتر زمان"""
+    global bale_offset
     print("✅ ربات GPT-3.5-Turbo فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
-            # 1. درخواست آپدیت‌ها با offset آخرین پیام پردازش شده + ۱
-            updates = get_updates(last_processed_update_id + 1)
+            updates = get_updates(bale_offset + 1)
             
-            # متغیری برای ذخیره بالاترین update_id در این دور از آپدیت‌ها
-            highest_update_id_in_batch = last_processed_update_id 
+            current_time = time.time()
+            highest_update_id_in_batch = bale_offset
+            
+            # 💡 🔑 مکانیسم ضد تکرار داخلی (Anti-Duplication Set)
+            # این مجموعه ID هایی که در این چرخه دیده‌ایم را نگه می‌دارد.
+            processed_ids_in_cycle = set() 
             
             for upd in updates.get("result", []):
                 
                 current_update_id = upd.get("update_id", 0)
                 
-                # 2. 🛡️ فیلتر قوی: مطمئن شوید پیام از قبل پردازش نشده باشد.
-                if current_update_id <= last_processed_update_id:
+                # 1. 🛑 فیلتر ID تکراری (داخل چرخه): اگر این ID در همین لحظه قبلاً دیده شده، نادیده‌اش بگیر.
+                if current_update_id in processed_ids_in_cycle:
+                    continue
+                
+                # 2. 🛑 فیلتر ID قبلی: اگر این ID قدیمی‌تر از آفست ما است، نادیده‌اش بگیر.
+                if current_update_id <= bale_offset:
                     continue 
-
+                
+                # 3. 🛡️ فیلتر زمان: فقط پیام‌هایی که کمتر از ۵ ثانیه پیش ارسال شده‌اند را پردازش کن.
                 message = upd.get("message", {})
+                message_date = message.get("date", 0)
+                
+                if current_time - message_date > 5: 
+                    print(f"⚠️ پیام قدیمی (ID: {current_update_id}) نادیده گرفته شد.")
+                    continue
+                
                 chat_id = message.get("chat", {}).get("id")
                 text = message.get("text")
                 
@@ -153,13 +166,14 @@ def run_bot_in_main_thread():
                     # 💡 ارسال پاسخ نهایی
                     send_message(chat_id, reply) 
                     
-                # 3. 🔑 به‌روزرسانی بالاترین ID در این دور برای استفاده در offset بعدی
+                # 4. 🔑 ثبت ID در مجموعه داخلی و به‌روزرسانی بالاترین ID
+                processed_ids_in_cycle.add(current_update_id)
                 if current_update_id > highest_update_id_in_batch:
                     highest_update_id_in_batch = current_update_id
             
-            # 4. 🔑 به‌روزرسانی نهایی: بعد از پایان پردازش کل بسته، offset را به بالاترین ID دریافتی تنظیم کنید.
-            if highest_update_id_in_batch > last_processed_update_id:
-                last_processed_update_id = highest_update_id_in_batch
+            # 5. 🔑 به‌روزرسانی نهایی: پس از پایان پردازش کل بسته
+            if highest_update_id_in_batch > bale_offset:
+                bale_offset = highest_update_id_in_batch
 
             time.sleep(1) 
 
