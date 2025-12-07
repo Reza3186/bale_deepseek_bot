@@ -125,7 +125,7 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
     
     # ۱. بارگیری تاریخچه و تعریف پیام سیستمی
     if chat_id not in CONVERSATION_HISTORY:
-        # 🟢 پیام سیستمی جدید: بهبود فارسی، لحن دوستانه و جهت‌گیری سیاسی
+        # 🟢 پیام سیستمی جدید: بهبود فارسی، لحن دوستانه و جهت‌گیری سیاسی (بدون تغییر)
         system_message_content = (
             "شما یک ربات هوشمند با شخصیتی گرم، محترمانه و صمیمی هستید. "
             "پاسخ‌های شما باید با **بهترین و غنی‌ترین واژگان فارسی** ارائه شود؛ از ساختارهای تحت‌اللفظی و ترجمه ناقص پرهیز کنید. "
@@ -145,7 +145,8 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         "Content-Type": "application/json"
     }
     
-    MODEL_NAME = "mistralai/mixtral-8x7b-instruct"
+    # 🔴 نام مدل به Nous Hermes 2 Mixtral (مدل پایدارتر) تغییر یافت.
+    MODEL_NAME = "nousresearch/nous-hermes-2-mixtral-8x7b-dpo" 
     
     payload = {
         "model": MODEL_NAME, 
@@ -213,6 +214,7 @@ def ask_mixtral(chat_id: int, user_text: str) -> str:
         return f"❌ خطای پاسخ مدل: {error_message}"
 
     except requests.exceptions.HTTPError as e:
+        # اگر باز هم خطای 404 یا 400 بدهد، مشکل از سمت OpenRouter یا کلید شماست.
         return f"❌ خطای HTTP در اتصال: {e}. (کلید OpenRouter را چک کنید)"
     except requests.exceptions.RequestException as e:
         return f"❌ خطای شبکه: {e}"
@@ -241,7 +243,7 @@ def send_message(chat_id: int, reply_text: str):
 # 🤖 تابع اصلی اجرای ربات با polling
 def run_bot():
     global last_update_id
-    print("✅ ربات Mixtral 8x7B با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
+    print("✅ ربات Nous Hermes 2 Mixtral با قابلیت جستجو و حافظه فعال شد. در حال گوش دادن به پیام‌ها...")
 
     while True:
         try:
